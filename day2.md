@@ -14,7 +14,11 @@ netstat -apn | grep 6666
 
 也可以自己封装函数，包括出错机制，调入参数；可以同时加一个 **.h**文件。
 
+MTU： 最大传输单元，受协议设置
 
+mss：受MTU标示一个数据包携带数据的上限数
+
+win：滑动窗口，当前本段，能接受的数据上限值
 
 **错误处理**
 
@@ -198,3 +202,313 @@ SYN，ACK，FIN标志位
 链路层 网络层 传输层 应用层 数据 校验码
 
 如果超过上限的话，会进行拆包。保证能把所有数据按照完整的包的形式传送出去。
+
+
+
+##### **多线程实现并发服务器**
+
+BUFSIZ ->8192
+
+INET_ADDRSTRLEN ->16
+
+练习：
+
+服务器端
+
+```c
+/*************************************************************************
+	> File Name: multpthread.c
+	> Author: 
+	> Mail: 
+	> Created Time: 2019年08月08日 星期四 10时10分10秒
+ ************************************************************************/
+
+#include<stdio.h>
+#include<stdlib.h>
+#include<unistd.h>
+#include<ctype.h>
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<string.h>
+#include<arpa/inet.h>
+#include<pthread.h>
+
+# define MAXLINE 123
+# define PORT 8556
+
+struct node{
+    struct sockaddr_in msg;
+    int clicin;
+};
+
+void *cal(void *arg){
+    struct node *tmp = (struct node*)arg;
+    int len ;
+    char buf[BUFSIZ];
+    char str[INET_ADDRSTRLEN];
+    while(1){
+
+    printf("receive client IP = %s, receive client PORT = %d\n",
+    inet_ntop(AF_INET ,&(*tmp).msg.sin_addr ,str,sizeof(str)),
+    ntohs((*tmp).msg.sin_port));
+
+    len = read(tmp->clicin , buf , sizeof(buf));
+    for (int i =0 ; i < len; i++){
+        buf[i] = toupper(buf[i]);
+    }
+    write(STDOUT_FILENO ,buf ,len);
+    write(tmp->clicin , buf, len);
+    }
+    close(tmp->clicin);
+    return NULL;
+}
+int main()
+{
+    struct sockaddr_in ser_lid,cli_lid;
+    int sfd , cfd;
+    socklen_t serlen;
+    pthread_t pth;
+    struct node tid[100 + 1];
+    int i = 0;
+
+    sfd = socket(AF_INET , SOCK_STREAM , 0);
+    if(sfd == -1){
+        perror("socket error");
+        exit(1);
+    }
+
+    memset(&ser_lid , 0, sizeof(struct sockaddr_in));
+   // bzero(&ser_lid,sizeof(ser_lid));
+    ser_lid.sin_family = AF_INET;
+    ser_lid.sin_addr.s_addr = htonl(INADDR_ANY);
+    ser_lid.sin_port = htons(PORT);
+
+    bind(sfd ,(struct sockaddr *)&ser_lid , sizeof(ser_lid));
+   
+    listen(sfd , 100);
+    printf("Waiting client dadadadadada\n");
+
+    while(1){
+    serlen = sizeof(cli_lid);
+    cfd = accept(sfd ,(struct sockaddr *)&cli_lid , &serlen);
+    tid[i].msg = cli_lid;
+    tid[i].clicin = cfd;
+    printf("11111\n");
+    pthread_create(&pth ,NULL, cal ,(void *)&tid[i]);
+    pthread_detach(pth);
+    i++;
+    }
+    return 0;
+}
+```
+
+客户端：
+
+```c
+/*************************************************************************
+	> File Name: client.c
+	> Author: 
+	> Mail: 
+	> Created Time: 2019年08月08日 星期四 11时16分54秒
+ ************************************************************************/
+
+#include<stdio.h>
+#include<string.h>
+#include<unistd.h>
+#include<arpa/inet.h>
+#include<stdlib.h>
+#include<ctype.h>
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<arpa/inet.h>
+
+# define MAXLINE 135
+# define PORT 8556
+int main(){
+
+    struct sockaddr_in serv;
+    char buf[MAXLINE];
+    int sockfd ,n;
+    
+    sockfd = socket(AF_INET ,SOCK_STREAM ,0);
+    bzero(&serv,sizeof(struct sockaddr));
+    serv.sin_family = AF_INET;
+    inet_pton(AF_INET ,"127.0.1.2",&serv.sin_addr.s_addr);
+    serv.sin_port = htons(PORT);
+    //  serv.sin_addr.s_addr = htonl("127.0.0.1");
+
+    connect(sockfd,(struct sockaddr *)&serv,sizeof(serv));
+
+    while(fgets(buf,MAXLINE ,stdin) != NULL){
+        write(sockfd , buf , sizeof(buf));
+        int len = read(sockfd,buf , MAXLINE);
+        write(STDOUT_FILENO ,buf, n);
+    }
+    close(sockfd);
+    return 0;
+}
+```
+
+**多进程实现并发服务器**
+
+服务器端：
+
+```c
+/*************************************************************************
+	> File Name: multpthread.c
+	> Author: 
+	> Mail: 
+	> Created Time: 2019年08月08日 星期四 10时10分10秒
+ ************************************************************************/
+
+#include<stdio.h>
+#include<stdlib.h>
+#include<unistd.h>
+#include<ctype.h>
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<string.h>
+#include<arpa/inet.h>
+#include<pthread.h>
+
+# define MAXLINE 123
+# define PORT 8556
+
+struct node{
+    struct sockaddr_in msg;
+    int clicin;
+};
+
+void *cal(void *arg){
+    struct node *tmp = (struct node*)arg;
+    int len ;
+    char buf[BUFSIZ];
+    char str[INET_ADDRSTRLEN];
+    while(1){
+
+    printf("receive client IP = %s, receive client PORT = %d\n",
+    inet_ntop(AF_INET ,&(*tmp).msg.sin_addr ,str,sizeof(str)),
+    ntohs((*tmp).msg.sin_port));
+
+    len = read(tmp->clicin , buf , sizeof(buf));
+    for (int i =0 ; i < len; i++){
+        buf[i] = toupper(buf[i]);
+    }
+    write(STDOUT_FILENO ,buf ,len);
+    write(tmp->clicin , buf, len);
+    }
+    close(tmp->clicin);
+    return NULL;
+}
+int main()
+{
+    struct sockaddr_in ser_lid,cli_lid;
+    int sfd , cfd;
+    socklen_t serlen;
+    pthread_t pth;
+    struct node tid[100 + 1];
+    int i = 0;
+    char str[INET_ADDRSTRLEN];
+    char buf[BUFSIZ];
+    int len;
+
+    sfd = socket(AF_INET , SOCK_STREAM , 0);
+    if(sfd == -1){
+        perror("socket error");
+       exit(1);
+    }
+    int opt;
+    setsockopt(sfd , SOL_SOCKET,SO_REUSEADDR ,&opt,sizeof(opt));
+    memset(&ser_lid , 0, sizeof(struct sockaddr_in));
+   // bzero(&ser_lid,sizeof(ser_lid));
+    ser_lid.sin_family = AF_INET;
+    ser_lid.sin_addr.s_addr = htonl(INADDR_ANY);
+    ser_lid.sin_port = htons(PORT);
+
+    bind(sfd ,(struct sockaddr *)&ser_lid , sizeof(ser_lid));
+   
+    listen(sfd , 100);
+    printf("Waiting client dadadadadada\n");
+     pid_t ret;
+    while(1){
+    serlen = sizeof(cli_lid);
+    cfd = accept(sfd ,(struct sockaddr *)&cli_lid , &serlen);
+    tid[i].msg = cli_lid;
+    tid[i].clicin = cfd;
+    ret = fork();
+         if(ret == 0){
+          close(sfd);
+         printf("receieve IP = %s , and the PORT = %d\n",
+               inet_ntop(AF_INET ,&cli_lid.sin_addr , str ,sizeof(str)),
+                ntohs(cli_lid.sin_port)
+              );
+            while(1){
+            //  printf("123123123\n");
+            len = read(cfd ,buf ,MAXLINE);
+             //   printf("---%d\n",len);
+            for (int ii = 0 ; ii < len ; ii++){
+                buf[ii] = toupper(buf[ii]);
+            }
+            write(STDOUT_FILENO , buf , len);
+             write(cfd , buf ,len); 
+          }
+            close(cfd);
+            return 0;
+        }
+        else if(ret > 0){
+   ///    close(cfd);   
+    }
+    }
+    return 0;
+}
+```
+
+客户端：
+
+```c
+/*************************************************************************
+	> File Name: client.c
+	> Author: 
+	> Mail: 
+	> Created Time: 2019年08月08日 星期四 11时16分54秒
+ ************************************************************************/
+
+#include<stdio.h>
+#include<string.h>
+#include<unistd.h>
+#include<arpa/inet.h>
+#include<stdlib.h>
+#include<ctype.h>
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<arpa/inet.h>
+
+# define MAXLINE 135
+# define PORT 8556
+int main(){
+
+    struct sockaddr_in serv;
+    char buf[MAXLINE];
+    int sockfd ,n;
+    
+    sockfd = socket(AF_INET ,SOCK_STREAM ,0);
+    bzero(&serv,sizeof(struct sockaddr));
+    serv.sin_family = AF_INET;
+    inet_pton(AF_INET ,"127.0.1.2",&serv.sin_addr.s_addr);
+    serv.sin_port = htons(PORT);
+    //  serv.sin_addr.s_addr = htonl("127.0.0.1");
+
+    connect(sockfd,(struct sockaddr *)&serv,sizeof(serv));
+
+    while(fgets(buf,MAXLINE ,stdin) != NULL){
+        write(sockfd , buf , strlen(buf));
+        int len = read(sockfd, buf , MAXLINE);
+        printf("--------%d---------\n",len);
+        write(STDOUT_FILENO ,buf, len);
+    }
+    close(sockfd);
+return 0;
+
+}
+```
+
