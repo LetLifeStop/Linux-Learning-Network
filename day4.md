@@ -33,7 +33,7 @@ int  epoll_create(int size)
 
 返回值：ret
 
-int类型的文件描述符
+int类型的文件描述符，红黑树的树根
 
 虚拟内存， 3g~4g中pcb进程控制块中，文件描述符表表示的文件描述符，从第三个开始存储。如果调用成功，在内核当中，返回的文件描述符指向一颗红黑树（平衡二叉树）的树根（左右子树高度误差小于 1），查找方式通过log级别的就可以查找到。 
 
@@ -51,25 +51,21 @@ int epoll_ctl(int epfd ,int op , int fd ,struct epoll_event *event);
 
 1. 把哪棵树的树根加入
 
-2. 操作类型
+2. 操作类型event ，三种操作 EPOLLIN/OUT/ERR
 
 3. 对哪个文件描述符进行操作
 
 4. ```c
    struct epoll_event{
-   uint32_t events;
+   uint32_t events; // 事件类型
    epoll_data_t data;
    };
    ```
 
-   event ，三种操作
-
-   EPOLLIN/OUT/ERR
-
-   data;
+   data结构体
 
    ```c
-   typedef union epoll_data{  联合体？？
+   typedef union epoll_data{  
    void *ptr; // 泛型指针
    int fd; // 和参数3中的fd应该相同
    uint32_t u32;
@@ -77,7 +73,9 @@ int epoll_ctl(int epfd ,int op , int fd ,struct epoll_event *event);
    }epoll_data_t;
    ```
 
+**void  *ptr 指针：**
 
+可以搞成回调函数
 
 3. **监听**
 
@@ -115,4 +113,424 @@ for (int i = 0 ; i < 2;i++){
 
 
 **实现方法：**
+
+注意点：
+
+1. 在建立红黑树根的时候，最后一个参数的文件描述符是 lfd，并且事件为读取
+2. 当收到的信息是从lfd传来的时候，这个时候是要创立链接的,也就是要在树上加一个点
+3. 在读取的时候，读取是按照最大长度，然后写入的时候是按照读取了多么长的字符串来写入的，否则会出现乱码
+
+```c
+/*************************************************************************
+	> File Name: poll.c
+	> Author: 
+	> Mail: 
+	> Created Time: 2019年08月11日 星期日 09时58分14秒
+ ************************************************************************/
+
+#include<stdio.h>
+#include<stdlib.h>
+#include<ctype.h>
+#include<string.h>
+#include<sys/epoll.h>
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<arpa/inet.h>
+#include<unistd.h>
+
+# define PORT 8556
+
+int main(){
+ 
+    int lfd , cfd, sockfd ,ret_del ,tot ,i ,j ,n;
+    int ret_setsocket , ret_bind ,ret_listen,ret_epoll_create , ret_epoll_ctl;
+    struct sockaddr_in ser_addr, cli_addr;
+    struct epoll_event rt ,tmp;
+    struct epoll_event mul[10 + 1];
+    int client[10 + 1] ,maxi = -1;
+    socklen_t ser_addr_len , cli_addr_len;
+    char buf[100],str[100];
+
+
+    lfd = socket(AF_INET , SOCK_STREAM , 0);
+    if(lfd < 0 ){
+        perror("create socket error");
+        exit(1);
+    } 
+
+    int opt = 1;
+    ret_setsocket = setsockopt(lfd , SOL_SOCKET , SO_REUSEADDR ,&opt ,sizeof(opt) );
+    if(ret_setsocket <  0){
+        perror("setsocket errror");
+        exit(1);
+    }
+    
+    bzero(&ser_addr , sizeof(ser_addr));
+    ser_addr.sin_port = htons(PORT);
+    ser_addr_len = sizeof(ser_addr);
+    ser_addr.sin_family = AF_INET;
+    ser_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    ret_bind =  bind(lfd ,(struct sockaddr *)&ser_addr, ser_addr_len);
+    if(ret_bind < 0 ){
+        perror("create bind error");
+        exit(1);
+    }
+
+    ret_listen = listen(lfd , 100);
+    if(ret_listen < 0){
+        perror("set listen error");
+        exit(1);
+    }
+
+    for(int i = 0 ; i < 10 ;i++ ){
+        client[i] = -1;
+    }
+    ret_epoll_create =  epoll_create(10);
+    if(ret_epoll_create < 0){
+        perror("epoll create error");
+        exit(1);
+    }
+
+    rt.events = EPOLL_CTL_ADD;
+    rt.data.fd =lfd;
+    ret_epoll_ctl = epoll_ctl(ret_epoll_create , EPOLL_CTL_ADD , lfd , &rt);
+    if(ret_epoll_ctl < 0){
+     perror("create root error");
+        exit(1);
+    } 
+
+    while(1){
+         tot = epoll_wait(ret_epoll_create , mul , 10 , -1);
+        if(tot < 0){
+            perror("epoll wait error") ;
+            exit(1);
+        }
+
+        for(i = 0 ; i < tot ;i++){
+            if(!(mul[i].events & EPOLLIN))continue;
+            if(mul[i].data.fd == lfd){
+        
+             cli_addr_len = sizeof(cli_addr);
+             cfd = accept(lfd ,(struct sockaddr *)&cli_addr ,&cli_addr_len );
+                if(cfd < 0 ){
+                    perror("accept error");
+                    exit(1);
+                }
+            printf("reveieve from %s at PROT %d\n",inet_ntop(AF_INET ,&cli_addr.sin_addr ,str, sizeof(str)), ntohs(cli_addr.sin_port));
+
+                tmp.events = EPOLLIN;
+                tmp.data.fd = cfd;
+                ret_epoll_ctl = epoll_ctl(ret_epoll_create ,EPOLL_CTL_ADD ,cfd ,&tmp);
+                if(ret_epoll_ctl < 0){
+                    perror("add cfd error");
+                    exit(1);
+                }
+            }
+            else {
+              sockfd = mul[i].data.fd;
+              n = read(sockfd , buf , sizeof(buf)) ;    
+                if(n == 0){
+                    printf("client already closed");
+                    // 记得从树中去除链接
+                    ret_del = epoll_ctl(ret_epoll_create, EPOLL_CTL_DEL, sockfd, NULL);
+                    close(sockfd);
+                    exit(1);
+                }
+                else if( n < 0 ){
+                    perror("read error");
+                    exit(1);
+                }
+                else if(n > 0){
+                    for(j = 0 ;j < n; j++){
+                        buf[j] = toupper(buf[j]);
+                    }
+                    write(STDOUT_FILENO ,buf , n);
+                    write(sockfd , buf ,n);
+                }
+            }
+        }
+    }
+        close(lfd);
+        close(cfd);
+        return 0;
+}
+```
+
+（ET）边沿触发： 0 ->1 ， 1 -> 0 电频发生变化（检测发生变化就执行，一瞬间的事）
+
+（LT）水平触发：1 -> 1 （直到发生变化停止）（**默认的触发方式**）
+
+通过这两种方法可以在哪些地方提高程序效率：
+
+当客户端发送过来1000kb的数据，如果客户端只读取了500kb，这个时候epoll是触发还是不触发？
+
+**练习：**
+
+通过epoll监听管道，检验是水平触发还是边沿触发
+
+结论是：边沿触发？ 不是。。。 应该是水平触发
+
+```c
+/*************************************************************************
+	> File Name: test2.c
+	> Author: 
+	> Mail: 
+	> Created Time: 2019年08月11日 星期日 18时52分16秒
+ ************************************************************************/
+
+#include<stdio.h>
+#include<stdlib.h>
+#include<string.h>
+#include<unistd.h>
+#include<fcntl.h>
+#include<sys/types.h>
+#include<sys/epoll.h>
+
+# define MAXLEN 10
+
+int main(){
+
+    pid_t ret;
+    int fd[2],ret_pipe ,i ,num, len;
+    int ret_epoll;
+    char ch = 'a';
+    char str[MAXLEN],buf[MAXLEN];
+
+    ret_pipe = pipe(fd);
+    if(ret_pipe < 0){
+        perror("create pipe error");
+        exit(1);
+    }
+
+    ret = fork();// 0 -> read ,1 ->write
+    if(ret < 0){
+        perror("fork error");
+        exit(1);
+    }
+
+    if(ret == 0){
+
+        close(fd[0]);
+        while(1){
+        for(i = 0 ; i < MAXLEN/2 ; i++ ){
+            str[i] = ch;
+        }
+        str[MAXLEN/2] = '\n';
+        ch++;
+        for(; i <MAXLEN; i++ ){
+            str[i] = ch;
+        }
+        write(fd[1] , str , MAXLEN);
+        sleep(3);
+    }
+        close(fd[1]);
+    }
+
+    else if(ret > 0){
+        close(fd[1]);
+     struct epoll_event event;
+     struct epoll_event mul[20];
+
+    ret_epoll = epoll_create(10);
+
+    event.events = EPOLLIN;
+    event.data.fd = fd[0];
+    epoll_ctl(ret_epoll , EPOLL_CTL_ADD ,fd[0], &event);
+
+        while(1){
+            num = epoll_wait(ret_epoll ,mul ,10 ,-1 );
+            printf("%d---\n",num);
+            if(mul[0].data.fd == fd[0]){
+                len = read(fd[0] , buf , MAXLEN/2);
+                printf("%d!!!!!\n",len);
+                write(STDOUT_FILENO ,buf, len);
+            }
+        }
+
+    close(fd[1]);
+    }
+   return 0;
+}
+```
+
+强制改成边沿触发：
+
+一直等到客户端再写数据才会触发，缺点是数据会越攒越多
+
+```c
+/*************************************************************************
+	> File Name: test2.c
+	> Author: 
+	> Mail: 
+	> Created Time: 2019年08月11日 星期日 18时52分16秒
+ ************************************************************************/
+
+#include<stdio.h>
+#include<stdlib.h>
+#include<string.h>
+#include<unistd.h>
+#include<fcntl.h>
+#include<sys/types.h>
+#include<sys/epoll.h>
+
+# define MAXLEN 10
+
+int main(){
+
+    pid_t ret;
+    int fd[2],ret_pipe ,i ,num, len;
+    int ret_epoll;
+    char ch = 'a';
+    char str[MAXLEN],buf[MAXLEN];
+
+    ret_pipe = pipe(fd);
+    if(ret_pipe < 0){
+        perror("create pipe error");
+        exit(1);
+    }
+
+    ret = fork();// 0 -> read ,1 ->write
+    if(ret < 0){
+        perror("fork error");
+        exit(1);
+    }
+
+    if(ret == 0){
+        close(fd[0]);
+        while(1){
+        for(i = 0 ; i < MAXLEN/2 ; i++ ){
+            str[i] = ch;
+        }
+        str[MAXLEN/2] = '\n';
+        ch++;
+        for(; i <MAXLEN; i++ ){
+            str[i] = ch;
+        }
+        write(fd[1] , str , MAXLEN);
+        sleep(3);
+    }
+        close(fd[1]);
+    }
+
+    else if(ret > 0){
+        close(fd[1]);
+     struct epoll_event event;
+     struct epoll_event mul[20];
+
+    ret_epoll = epoll_create(10);
+
+    event.events = EPOLLIN|EPOLLET;
+    event.data.fd = fd[0];
+    epoll_ctl(ret_epoll , EPOLL_CTL_ADD ,fd[0], &event);
+
+        while(1){
+            num = epoll_wait(ret_epoll ,mul ,10 ,-1 );
+            printf("%d---\n",num);
+            if(mul[0].data.fd == fd[0]){
+                len = read(fd[0] , buf , MAXLEN/2);
+                printf("%d!!!!!\n",len);
+                write(STDOUT_FILENO ,buf, len);
+            }
+        }
+
+    close(fd[1]);
+    }
+   return 0;
+}
+```
+
+这两种方法的辨别方式：
+
+判断时间，当向屏幕写数据的时候，判断写的时间，如果是每隔3s就是边缘触发；
+
+**边沿触发：**
+
+可以通过读取一部分，判断剩余的还有没有必要继续读
+
+设置成非阻塞的方法：
+
+1. fcntl ，修改打开文件的属性
+2. 通过函数参数进行调整
+
+```
+flag = fcntl(connfd ,F_GETFL);
+flag |= O_NONBLOCK;
+fcntl(connfd ,F_SETFL ,flag);// 修改connfd为非阻塞得方法
+```
+
+
+
+最好用的方法：epoll的边沿式触发，减少epoll函数的调用次数，并且实现非阻塞IO
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <sys/epoll.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#define MAXLINE 10
+#define SERV_PORT 8000
+
+int main(void)
+{
+    struct sockaddr_in servaddr, cliaddr;
+    socklen_t cliaddr_len;
+    int listenfd, connfd;
+    char buf[MAXLINE];
+    char str[INET_ADDRSTRLEN];
+    int efd, flag;
+
+    listenfd = socket(AF_INET, SOCK_STREAM, 0);
+
+    bzero(&servaddr, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(SERV_PORT);
+
+    bind(listenfd, (struct sockaddr *)&servaddr, sizeof(servaddr));
+
+    listen(listenfd, 20);
+
+    ///////////////////////////////////////////////////////////////////////
+    struct epoll_event event;
+    struct epoll_event resevent[10];
+    int res, len;
+
+    efd = epoll_create(10);
+
+    event.events = EPOLLIN | EPOLLET;     /* ET 边沿触发，默认是水平触发 */
+
+    //event.events = EPOLLIN;
+    printf("Accepting connections ...\n");
+    cliaddr_len = sizeof(cliaddr);
+    connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &cliaddr_len);
+    printf("received from %s at PORT %d\n",
+            inet_ntop(AF_INET, &cliaddr.sin_addr, str, sizeof(str)),
+            ntohs(cliaddr.sin_port));
+
+    flag = fcntl(connfd, F_GETFL);          /* 修改connfd为非阻塞读 */
+    flag |= O_NONBLOCK;
+    fcntl(connfd, F_SETFL, flag);
+
+    event.data.fd = connfd;
+    epoll_ctl(efd, EPOLL_CTL_ADD, connfd, &event);      //将connfd加入监听红黑树
+    while (1) {
+        printf("epoll_wait begin\n");
+        res = epoll_wait(efd, resevent, 10, -1);        //最多10个, 阻塞监听
+        printf("epoll_wait end res %d\n", res);
+
+        if (resevent[0].data.fd == connfd) {
+            while ((len = read(connfd, buf, MAXLINE/2)) >0 )    //非阻塞读, 轮询
+                write(STDOUT_FILENO, buf, len);
+        }
+    }
+    return 0;
+}
+```
 
