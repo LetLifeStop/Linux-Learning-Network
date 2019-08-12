@@ -31,7 +31,7 @@ int  epoll_create(int size)
 
 用来告诉内核需要创建多大的epoll模型（最多能接听多少文件描述符，只是**建议值**）
 
-返回值：ret
+返回值：ret	
 
 int类型的文件描述符，红黑树的树根
 
@@ -463,6 +463,10 @@ fcntl(connfd ,F_SETFL ,flag);// 修改connfd为非阻塞得方法
 
 最好用的方法：epoll的边沿式触发，减少epoll函数的调用次数，并且实现非阻塞IO
 
+**解释：**
+
+如果是水平触发，会大大增加epoll_wait 函数的调用次数；但是如果是边沿触发，有可能会导致数据堵塞；所以通过对边沿触发进行改造，将客户端的读事件修改成非阻塞，既可以实现对epoll_wait 函数的调用次数，也可以防止数据堵塞。
+
 ```c
 #include <stdio.h>
 #include <string.h>
@@ -528,6 +532,219 @@ int main(void)
         if (resevent[0].data.fd == connfd) {
             while ((len = read(connfd, buf, MAXLINE/2)) >0 )    //非阻塞读, 轮询
                 write(STDOUT_FILENO, buf, len);
+        }
+    }
+    return 0;
+}
+```
+
+**epoll 反应堆模型（libevent 核心思想实现）**
+
+优点 ： （反应堆，形容词？）
+
+1. 跨平台
+2. 代码量小，实现的功能多 （核心实现：epoll ，反应堆）                                                                                                                                                                        
+
+**epoll反应堆模型：**                                                         （滑动窗口机制）→↓
+
+1. epoll - 服务器 -监听 -cfd -可读 -epoll 返回 - read - **读取完之后，从树上删除cfd，重新设置监听cfd，并且把原来的可读修改成是否可写** - 小写转大写 - 等待epoll_wait 返回  - 回写客户端 - **写完之后，从树上删除cfd ，重新设置监听cfd的读时间事件 - 继续监听
+
+   多了判断 可写 与 可读 ， 考虑到滑动窗口会不会填满，所以可以先判断一下。
+
+2.  ```c
+   evt[i].events = EPOLLIN; evt[i].data.fd = cfd;
+    ```
+
+   这里的data不再传递cfd，而是结构体中的泛型指针储存一个结构体
+
+   ```c
+   void *ptr;
+   
+   typedef struct{
+   
+   int fd;
+   
+   void (*func)(void *arg);
+   
+   void *arg;
+   }
+   ```
+
+
+
+**代码实现：**
+
+具体思路：
+
+为什么要使用epoll反应堆模型？
+
+1. 对于同一个socket而言，完成手法至少需要占用两个树上的位置，但是交替的话，只需要一个
+2. 为什么要可读和可写轮回交替？保证，一问一答
+
+**（sb老师不说清楚）**
+
+![epoll反应堆思路](C:\Users\acm506\Desktop\epoll反应堆思路.png)
+
+https://blog.csdn.net/yyxyong/article/details/62894056 
+
+```c
+/*************************************************************************
+	> File Name: epoll.c
+	> Author: 
+	> Mail: 
+	> Created Time: 2019年08月12日 星期一 19时58分35秒
+ ************************************************************************/
+
+#include<stdio.h>
+#include<stdlib.h>
+#include<string.h>
+#include<sys/types.h>
+#include<sys/inet.h>
+#include<unistd.h>
+
+# define PORT 8556
+# define MAX_EPOLL 100
+# define MAX_LEN 1000
+int global_epoll;
+int lfd ;
+
+struct my_event{
+    int fd;                                        // 文件描述符
+    int events;                                    // 代表的权限
+    void *arg;                                     // 泛型参数
+    void *call_back(int fd ,int events ,void *arg);// 回调函数
+    int status;                                    // 是否在红黑树上 
+    char buf[MAX_LEN];                             // 缓冲区字符串
+    int len;                                       // 字符串长度
+    long last_active;                              // 最近一次活动时间
+};
+
+struct my_events mul[MAX_EPOLL + 1];
+
+void event_init(struct my_events *tmp ,int fd ,void (*call_back)(int,int, void *),void *arg ){
+    tmp->fd = fd;
+    tmp->events = event;
+    tmp->arg = arg;
+    tmp->status = 0;
+    tmp->last_active = time(NULL);
+    return ;
+}
+
+void event_add(int fd ,int event ,struct my_events *ev){ // 向树根中加入新节点
+
+    struct epoll_event tmp = {0 ,{0}};
+    int op;
+
+    tmp->events = event;
+    tmp->arg = ev;
+
+    if(ev->status == 0){
+     op = EPOLL_CTL_ADD;
+     ev->status = 1;
+    }
+    else op = EPOLL_CTL_MOD;
+
+    int ret = epoll_ctl(fd  , op , ev->fd , &tmp);
+    if(ret < 0){
+    perror("epoll ctl error");
+    exit(1);
+    }
+    printf("event add right");
+   return ;
+}
+void event_del(int fd ,struct my_events *ev){
+    
+    struct epoll_event epv = {0,{0}};
+    if(ev->status == 0){
+        return ;
+    }
+
+    epv.data.ptr = ev;
+    ev.status = 0;
+    epoll_ctl(global_epoll ,EPOLL_CTL_DEL , ev->fd , &epv );
+
+    return ;
+
+}
+void accept_con(){
+
+}
+void read_cal(){
+
+}
+void write_call(){
+
+}
+
+void init_epoll(){
+
+    // 创建套接字
+    lfd = socket(AF_INET,SOCK_STREAM , NULL);
+    if(lfd < 0 ){
+        perror("create socker error");
+        exit(1);
+    }
+
+    struct sockaddr_in tmp;
+    int len ;
+    memset(&tmp , 0 ,sizeof(tmp));
+    tmp.sin_family = AF_INET;
+    tmp.sin_addr.s_addr = htonl(INADDR_ANY);
+    tmp.sin_port = htons(PORt);
+    len = sizeof(tmp);
+
+    int ret = bind(lfd ,(struct sockaddr *)*tmp , len );
+    if(tmp < 0 ){
+        perror("bind error");
+        exit(1);
+    }
+
+    ret = listen(lfd , MAX_EPOLL);
+    if(ret < 0){
+        perror("listen error");
+        exit(1);
+    }
+
+    // 赋值为非堵塞
+    int flag;
+    flag = fcntl(lfd , F_GETFL);
+    flag |= O_NONBLOCK;
+    fcntl(lfd , F_SETFL ,flag);  
+    
+    // 初始化结构体
+    event_init(&mul[MAX_EPOLL] , lfd , accept_con , &mul[MAX_EPOLL]);
+    event_add(lfd,EPOLL_IN , &mul[MAX_EXPOLL]);
+    
+    return ;
+}
+int main(){
+    
+    global_epoll = epoll_create(MAX_EPOLL);
+    if(global_epoll < 0){
+        perror("create epoll error");
+        exit(1);
+    }
+
+    init_epoll();
+    
+    struct epoll_event events[MAX_EPOLL + 1];
+    
+    int i;
+    while(1){
+        
+
+    int nfd = epoll_wait(global_epoll , events , MAX_EPOLL , 1000);
+        if(nfd < 0){
+            perror("epoll wait error");
+            exit(1);
+        }
+
+        for ( i = 0 ; i < nfd ;i++ ){
+            struct *my_event tmp = (struct my_events *)events[i].ptr;
+            if((events[i].events & EPOLLIN) &&(tmp->events & EPOLLIN))
+            tmp->call_back(tmp->fd , events[i].event , tmp->arg);
+            if((events[i].events & EPOLLOUT)&&(tmp->events & EPOLLOUT))
+            tmp->call_back(tmp->fd , events[i].event . tmp->arg);
         }
     }
     return 0;
