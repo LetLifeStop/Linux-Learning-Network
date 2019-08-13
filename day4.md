@@ -1,3 +1,7 @@
+---
+typora-copy-images-to: ./
+---
+
 day3补充：
 
 1. TCP状态转换图，三次握手，四次握手（半关闭），主动请求端状态
@@ -553,7 +557,7 @@ int main(void)
 
 2.  ```c
    evt[i].events = EPOLLIN; evt[i].data.fd = cfd;
-    ```
+   ```
 
    这里的data不再传递cfd，而是结构体中的泛型指针储存一个结构体
 
@@ -587,6 +591,8 @@ int main(void)
 
 https://blog.csdn.net/yyxyong/article/details/62894056 
 
+好tm浪费时间。。
+
 ```c
 /*************************************************************************
 	> File Name: epoll.c
@@ -599,8 +605,12 @@ https://blog.csdn.net/yyxyong/article/details/62894056
 #include<stdlib.h>
 #include<string.h>
 #include<sys/types.h>
-#include<sys/inet.h>
 #include<unistd.h>
+#include<arpa/inet.h>
+#include<time.h>
+#include<sys/epoll.h>
+#include<errno.h>
+#include<fcntl.h>
 
 # define PORT 8556
 # define MAX_EPOLL 100
@@ -612,74 +622,158 @@ struct my_event{
     int fd;                                        // 文件描述符
     int events;                                    // 代表的权限
     void *arg;                                     // 泛型参数
-    void *call_back(int fd ,int events ,void *arg);// 回调函数
+    void (*call_back)(int fd ,int events ,void *arg);// 回调函数
     int status;                                    // 是否在红黑树上 
     char buf[MAX_LEN];                             // 缓冲区字符串
     int len;                                       // 字符串长度
     long last_active;                              // 最近一次活动时间
 };
 
-struct my_events mul[MAX_EPOLL + 1];
+struct my_event mul[MAX_EPOLL + 1];
 
-void event_init(struct my_events *tmp ,int fd ,void (*call_back)(int,int, void *),void *arg ){
+void read_cal(int fd ,int events , void *arg );
+void write_cal(int fd ,int events ,void *arg );
+
+void event_init(struct my_event *tmp ,int fd ,void (*call_back)(int,int, void *),void *arg ){
     tmp->fd = fd;
-    tmp->events = event;
-    tmp->arg = arg;
+    tmp->events = 0;
+    tmp->call_back = call_back;
     tmp->status = 0;
     tmp->last_active = time(NULL);
+    tmp->arg = arg;
     return ;
 }
 
-void event_add(int fd ,int event ,struct my_events *ev){ // 向树根中加入新节点
+void event_add(int fd ,int event ,struct my_event *ev){ // 向树根中加入新节点
 
     struct epoll_event tmp = {0 ,{0}};
-    int op;
+    int op = 0;
 
-    tmp->events = event;
-    tmp->arg = ev;
-
+    tmp.events =ev->events =  event;
+    tmp.data.ptr = ev;
+                                                       
     if(ev->status == 0){
      op = EPOLL_CTL_ADD;
      ev->status = 1;
     }
-    else op = EPOLL_CTL_MOD;
+    //else op = EPOLL_CTL_MOD;
 
     int ret = epoll_ctl(fd  , op , ev->fd , &tmp);
     if(ret < 0){
-    perror("epoll ctl error");
+        perror("epoll ctl111111111111111111111111 error");
     exit(1);
     }
     printf("event add right");
    return ;
 }
-void event_del(int fd ,struct my_events *ev){
+void event_del(int fd ,struct my_event *ev){
     
     struct epoll_event epv = {0,{0}};
     if(ev->status == 0){
         return ;
     }
 
-    epv.data.ptr = ev;
-    ev.status = 0;
+    epv.data.ptr = NULL;
+    ev->status = 0;
+
     epoll_ctl(global_epoll ,EPOLL_CTL_DEL , ev->fd , &epv );
 
     return ;
 
 }
-void accept_con(){
+void accept_con(int lfd ,int events ,void  *arg){
+    struct sockaddr_in cin;
+    socklen_t len = sizeof(cin);
+    int cfd , i;
+    
+    if((cfd = accept(lfd , (struct sockaddr *)&cin , &len) < 0)){
+        if(errno != EAGAIN && errno != EINTR){
 
+        }
+        printf("%s:accept ,%s\n",__func__, strerror(errno));
+        return ;
+    }
+
+    do{
+        for( i = 0 ; i < MAX_EPOLL; i++ ){
+            if(mul[i].status == 0){
+                break;
+            }
+        }
+
+        if( i==  MAX_EPOLL){
+            printf("full hahhaha\n");
+            break;
+        }
+
+        int flag = 1 ;
+        if((flag == fcntl(cfd ,F_SETFL ,O_NONBLOCK)) < 0){
+            perror("fcntl error");
+            exit(1);
+        }
+
+        event_init(&mul[i] , cfd , read_cal , &mul[i]);
+        event_add(global_epoll , EPOLLIN , &mul[i]);
+     }while(0);
+
+    printf("new conncet %s %d time:%ld pos %d\n", inet_ntoa(cin.sin_addr),
+          ntohs(cin.sin_port) , mul[i].last_active ,i);
+        return ;
 }
-void read_cal(){
+        
+void read_cal(int fd ,int events ,void *arg){
 
+    struct my_event *tmp = (struct my_event *)arg;
+    int len ;
+    
+    len = read(tmp->fd , tmp->buf , MAX_LEN);
+    event_del(global_epoll , tmp);
+    
+    if(len > 0){
+        tmp->len = len ;
+        tmp->buf[ len ] ='\0';
+        printf("receive %d --%s\n",len ,tmp->buf);
+
+        event_init( tmp , fd , write_cal , tmp );
+        event_add( global_epoll ,EPOLLOUT ,tmp );
+    }
+    else if(len == 0){
+        close(tmp->fd);
+        printf("closed");
+    }
+    else {
+        close(tmp->fd);
+        printf("revdata error");
+    }
+    return ;
 }
-void write_call(){
+void write_cal(int fd ,int events ,void *arg){
 
+    struct my_event *tmp = (struct my_event *)arg;
+    int len ;
+    len = send(fd , tmp->buf , tmp->len , 0);
+    event_del(global_epoll , tmp);
+
+    if(len > 0){
+    printf("send fd = %d  %s\n", fd, tmp->buf );
+        event_init(tmp , fd , read_cal ,tmp);
+        event_add(global_epoll , EPOLLIN , tmp);
+    }
+    else {
+        close(tmp->fd);
+        printf(" send error");
+    }
+    return ;
 }
 
 void init_epoll(){
 
     // 创建套接字
-    lfd = socket(AF_INET,SOCK_STREAM , NULL);
+    lfd = socket(AF_INET,SOCK_STREAM , 0);
+    int flag;
+    flag = fcntl(lfd , F_GETFL);
+    flag |= O_NONBLOCK;
+    fcntl(lfd , F_SETFL ,flag);  
     if(lfd < 0 ){
         perror("create socker error");
         exit(1);
@@ -690,11 +784,11 @@ void init_epoll(){
     memset(&tmp , 0 ,sizeof(tmp));
     tmp.sin_family = AF_INET;
     tmp.sin_addr.s_addr = htonl(INADDR_ANY);
-    tmp.sin_port = htons(PORt);
+    tmp.sin_port = htons(PORT);
     len = sizeof(tmp);
 
-    int ret = bind(lfd ,(struct sockaddr *)*tmp , len );
-    if(tmp < 0 ){
+    int ret = bind(lfd ,(struct sockaddr *)&tmp , len );
+    if(ret < 0 ){
         perror("bind error");
         exit(1);
     }
@@ -704,20 +798,14 @@ void init_epoll(){
         perror("listen error");
         exit(1);
     }
-
-    // 赋值为非堵塞
-    int flag;
-    flag = fcntl(lfd , F_GETFL);
-    flag |= O_NONBLOCK;
-    fcntl(lfd , F_SETFL ,flag);  
     
     // 初始化结构体
     event_init(&mul[MAX_EPOLL] , lfd , accept_con , &mul[MAX_EPOLL]);
-    event_add(lfd,EPOLL_IN , &mul[MAX_EXPOLL]);
+    event_add(global_epoll , EPOLLIN , &mul[MAX_EPOLL]);
     
     return ;
 }
-int main(){
+int main(int argc ,char *argv[]){
     
     global_epoll = epoll_create(MAX_EPOLL);
     if(global_epoll < 0){
@@ -726,13 +814,25 @@ int main(){
     }
 
     init_epoll();
-    
+
     struct epoll_event events[MAX_EPOLL + 1];
     
-    int i;
+    int i , checkpos = 0;
     while(1){
-        
+        long now = time(NULL);
+        for( i = 0 ; i < 100 ;i++ , checkpos++ ){
+            if(checkpos == MAX_EPOLL)checkpos = 0;
+            if(mul[checkpos].status != 1)continue;
 
+            long del  = now - mul[checkpos].last_active;
+
+            if(del >= 60){
+
+                close(mul[checkpos].fd);
+                printf("fd = %d timeout \n" ,mul[checkpos].fd);
+                event_del(global_epoll , &mul[checkpos]);
+            }
+        }
     int nfd = epoll_wait(global_epoll , events , MAX_EPOLL , 1000);
         if(nfd < 0){
             perror("epoll wait error");
@@ -740,14 +840,338 @@ int main(){
         }
 
         for ( i = 0 ; i < nfd ;i++ ){
-            struct *my_event tmp = (struct my_events *)events[i].ptr;
+            struct my_event *tmp = (struct my_event *)events[i].data.ptr;
             if((events[i].events & EPOLLIN) &&(tmp->events & EPOLLIN))
-            tmp->call_back(tmp->fd , events[i].event , tmp->arg);
+            tmp->call_back(tmp->fd , events[i].events , tmp->arg);
             if((events[i].events & EPOLLOUT)&&(tmp->events & EPOLLOUT))
-            tmp->call_back(tmp->fd , events[i].event . tmp->arg);
+            tmp->call_back(tmp->fd , events[i].events , tmp->arg);
         }
     }
     return 0;
 }
+```
+
+**心跳包**
+
+作用：
+
+探测客户端和服务器之间是否仍保持链接（类似于应用层的协议）
+
+**乒乓包**
+
+作用：
+
+和心跳包机制差不多，在判别网络是否通顺时，还可以发送少量信息，起到一个信号的作用？
+
+（还是属于应用层的协议）
+
+**TCP自带的属性当中也可以判断链接是否正常**
+
+SO_KEEPALIVE 宏 
+
+如果两小时内无数据传递，TCP发送探测分节给对方
+
+1. 对方正常接收
+2. 对方回复一个ACK，对方已崩溃并且重新启动
+3. 无回应，再每隔75s发送一个探测分节，一共8个。发送完之后仍无相应就放弃
+
+```c
+keepAlive = 1;
+setsockopt(lfd ,SOL_SOCKET ,SO_KEEPALIVE ,(void *)keepAlive ,sizeof(keepalive));
+```
+
+
+
+
+
+#### 线程池
+
+![线程池实现思路](C:\Users\acm506\Desktop\Linux\Linux-Learning-Network\线程池实现思路.png)
+
+具体思路：
+
+/*
+1. 创建线程池
+    1）初始化  （对结构体内容的锁，正在运行的线程个数的锁 ） -> 互斥锁     管家程序访问
+                      （判断循环队列是否满的锁 ，通知线程来领任务的锁）  -> 条件变量   可能有多个线程同时询问
+                     （线程池中每个线程的id ， 对应的参数）
+                     （管理进程id，任务队列）   
+    
+    ​                （线程池中最大的个数。线程池中最小的个数，当前线程池总的线程个数，正在运行的线程个数，要销毁的线程池个数）
+    ​              （任务队列，队首，队尾，实际的任务数，总的能够承受的任务数）
+    ​                （整个线程池的开关）
+    ​         （初始化互斥量，条件变量）
+    
+    
+    
+2. 
+
+    2）申请空间      （子线程信息申请空间）
+                       （任务队列申请空间）
+
+    3）启动线程      （子线程最少的申请）
+                       （管理线程申请空间）
+
+3. 模拟客户端向服务器中发送信息              
+      1）获取队列没有满的锁
+      2）向锁中写入数据
+      3）发送通知线程来领取任务的信号
+      4）把队列没有满的锁的权限放开
+
+4. 管家线程调节线程池去处理任务
+
+      1）首先接受pthread_full信号，这一部分是要被清除掉的
+
+      2）从循环队列中取出一个任务
+
+      3）从线程池中取出一个线程来解决这个任务
+
+5. 管家线程调整线程池中各类型个数
+
+     1）获取线程各部分个数信息的锁
+     2）读取当前循环队列中任务的个数
+     3）返回对循环队列的信息的锁
+     4）获取对当前线程池中正在运行的线程个数的锁
+     5）读取当前线程池中正在运行的线程个数
+     6）返回对当前线程池中正在运行的线程个数的锁
+     7）判断获取的两个数的大小关系，如果不够的话，增加线程个数
+     8）线程处理任务
+
+6. 小功能
+    1）释放所有的锁
+    2）判断某一个线程是否存活
+    */
+
+```c
+#include<stdlib.h>
+#include<stdio.h>
+#include<unistd.h>
+#include<pthread.h>
+
+# define TOT_PTHREAD 15
+# define TOT_QUEUE 11
+# define DEFAULT_TIME 10
+# define MIN_WAIT_TASK_NUM 10
+# define DEFAULT_THREAD_VARY 10
+struct thread_task{
+void *(*cal)(void *);
+void *arg;
+};
+struct Message{
+pthread_mutex_t tot_lock;
+pthread_mutex_t num_busy_lock;
+pthread_cond_t queue_full;
+pthread_cond_t queue_to_pthread;
+
+pthread_t *threads;
+pthread_t  con_id;
+struct thread_task  *task_queue;
+
+int max_pthread;
+int min_pthread;
+int tot_pthread;
+int busy_pthread;
+int del_pthread;
+
+int queue_top;
+int queue_end;
+int queue_act;
+int queue_tot;
+
+int shut;
+};
+struct Message pthread_pool_init(int max_pthread ,int min_pthread ,int busy_pthread){
+
+struct Message tmp;
+tmp.busy_pthread = busy_pthread;
+tmp.max_pthread = max_pthread;
+tmp.min_pthread = min_pthread;
+tmp.tot_pthread = TOT_PTHREAD;
+tmp.del_pthread = 0;
+tmp.queue_top = 0;
+tmp.queue_end = 0;
+tmp.queue_act = 0;
+tmp.queue_tot  = TOT_QUEUE;
+tmp.shut = 0;
+
+tmp.threads = (pthread_t *)malloc(sizeof(pthread_t) * TOT_PTHREAD);
+if(tmp.threads == NULL){
+    printf("init thread error");
+    exit(1);
+}
+memset(threads , 0, sizeof(threads));
+
+tmp.task_queue = (struct thread_task *)malloc(sizeof(struct thread_task *));
+if(tmp.task_queue == NULL){
+    printf("init task queue error");
+    exit(1);
+}
+
+if(pthread_mutex_init(&(tmp.tot_lock), NULL) != 0 || pthread_mutex_init(&(tmp.busy_lock) ,NULL) != 0||
+pthread_cond_init(&(tmp.queue_full), NULL) != 0 || pthread_cond_init(&(queue_to_pthread) ,NULL) != 0){
+    printf("pthread mutex or cond init error");
+    exit(1);
+}
+
+for(int i = 0 ; i < min_pthread ; i++ )
+{
+    pthread_create(&(tmp->threads[i]) ,NULL ,pthread_pool , (void *)tmp );
+    printf("now !! xiangge start %d hahahah\n", tmp->threads[i]);
+}
+
+pthread_create(&(tmp->cond_id) , NULL , con_thread, (void *)tmp);
+
+return tmp;
+}
+
+void pthread_add(struct Message *pool , void *( *cal)(void *arg) ,void *arg ){
+
+  pthread_mutex_lock( &(pool->tot_lock));
+
+   while((pool->max_pthread == pool->queue_tot && (! pool->shut))){
+    pthread_cond_wait( &(pool->queue_full) , &(pool->tot_lock));
+   }
+
+   if(pool->shut == 0){
+    exit(1);
+   }
+
+   if(pool->task_queue[pool->queue_end] != NULL){
+    free(pool->task_queue[pool->queue_end ]->arg)  ;
+    pool->task_queue[pool->queue_end]->arg = NULL ;
+   }
+
+   pool->task_queue[pool->queue_end ].cal = cal;
+   pool->task_queue[pool->queue_end].arg = arg;
+   pool->queue_end = (pool->queue_end + 1) % TOT_QUEUE;
+   pool->queue_act ++ ;
+
+   pthread_cond_signal( &(pool->queue_to_pthread));
+   pthread_mutex_unlock( &(pool->tot_lock));
+
+  return ;
+}
+
+void *con_thread(void *pthread){  ///  管理者控制线程各类的个数
+struct Message *tmp = (struct Message *)pthread;
+int tot_pthread , busy_pthread , queue_size;
+while(tmp->shut == 0 ){
+
+    pthread_mutex_lock(&(tmp->tot_lock));
+    tot_pthread = tmp->min_pthread;
+    queue_size  = tmp->queue_act;
+    pthread_mutex_unlock(&(tmp->tot_lock));
+
+    pthread_mutex_lock(&(tmp->num_busy_lock));
+    busy_pthread = tmp->num_busy_lock;
+    pthread_mutex_lock(&(tmp->num_busy_lock));
+
+    if(queue_size >= MIN_WAIT_TASK_NUM && tot_pthread < tmp->max_pthread ){
+        pthread_mutex_lock(&(pool->lock));
+        int add  = 0;
+
+        for( i = 0 ; i < tmp->max_pthread &&add < DEFAULT_THREAD_VARY & tmp->tot_pthread
+        < tmp->max_pthread ; i++ ){
+            if( tmp->threads[i] == 0 || !is_thread_alive( tmp->threads[i])){
+                pthread_create(&(tmp->threads[i] , NULL , threadpool_thread , (void *)tmp));
+            }
+        }
+          pthread_mutex_unlock(&(pool->lock));
+    }
+
+    if(busy_pthread * 2 < tot_pthread && tot_pthread >tmp->min_pthread ){
+
+        pthread_mutex_lock(&(tmp->lock));
+        tmp->del_pthread = DEFAULT_THREAD_VARY;
+        pthread_mutex_unlock(&(tmp->lock));
+
+        for(int i = 0 ; i < tmp->del_pthread ; i++ ){
+            pthread_cond_signal(&(tmp->queue_full));
+            /// 当这个进程为多余的时候，会安排发送queue_full 信号，使得当前的线程注销掉
+        }
+    }
+}
+return ;
+}
+void *pthread_pool(void *pthread){  ///  线程从服务器队列中寻找信息去处理
+struct Message *tmp = (struct Message *)pthread;
+struct thread_task task;
+while(1){
+    pthread_mutex_lock(&(tmp->tot_lock));
+    while((tmp->queue_tot == 0) &&(!tmp->shut)){
+        pthread_cond_wait(&(tmp->queue_full) , &(tmp->tot_lock));
+
+        if(tmp->del_pthread > 0){
+            tmp->del_pthread --;
+        }
+
+        if(tmp->tot_pthread > tmp->min_pthread ){
+            printf("thread 0x%x is exiting\n", (unsigned in)pthread_self());
+            tmp->tot_pthread--;
+            pthread_mutex_unlock(&(tmp->tot_lock));
+            pthread_exit(NULL);
+        }
+    }
+
+    if( tmp->shut){
+        pthread_mutex_unlock(&(tmp->tot_lock));
+        printf("thread 0x%x is exiting \n",(unsigned int) pthread_self());
+        pthread_exit(NULL);
+    }
+    task.cal = tmp->task_queue[tmp->queue_top].cal;
+    task.arg = tmp->task_queue[tmp->queue_top].arg;
+
+    tmp->queue_top = (tmp->queue_top + 1) %tmp->queue_tot;
+    tmp->queue_act --;
+
+    pthread_cond_broadcast(&(tmp->queue_full));
+
+    pthread_mutex_unlock(&(tmp->tot_lock));
+
+    printf("thread 0x %x start working\n",(unsigned int)pthread_self());
+    pthread_mutex_lock(&(tmp->busy_pthread));
+    tmp->busy_pthread ++ ;
+    pthread_mutex_unlock(&(tmp->busy_pthread));
+    (*(task.cal))(task.arg);
+
+    printf("thread 0x %x finish working\n",(unsigned int)pthread_self());
+    pthread_mutex_lock(&(tmp->busy_pthread));
+    tmp->busy_pthread --;
+    pthread_mutex_unlock(&(tmp->busy_pthread));
+}
+ pthread_exit(NULL);
+return ;
+}
+
+bool is_thread_alive(pthread_t pid){
+int kill_rc = pthread_kill(pid , 0);
+if(kill_rc == ESRCH){
+    return false;
+}
+return true;
+}
+void *cal(void *arg){
+printf("thread %x working on task %d\n" ,(unsigned int)pthread_self() ,*(int *)arg);
+sleep(1);
+printf("task %d is end \n", *(int *)arg);
+return ;
+}
+
+void thread_destroy(){
+
+}
+int main(){
+
+  struct Message pool = pthread_pool_init(10 ,5 ,3);
+
+  int times[20 + 1];
+  for(int i = 0 ; i < 20 ; i++ ){
+    times[i] = i ;
+    pthread_add( &pool , cal , (void *)&times[i]);
+  }
+  pthread_destroy(pt);
+return 0;
+}
+
 ```
 
