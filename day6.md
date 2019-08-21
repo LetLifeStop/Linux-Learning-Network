@@ -333,6 +333,19 @@ shift       从参数列表左移一个 ，$1 , $2 也依次往后类推（$0 �
 
 
 
+**for循环将文件后缀为txt的文档，将txt去掉**
+
+```shell
+ #!/bin/bash
+  
+for filename in $(ls *.txt);
+ do 
+    mv $filename ${filename%txt}
+ done                                                             
+```
+
+
+
 #### 输入输出
 
 echo 
